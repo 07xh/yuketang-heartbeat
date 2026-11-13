@@ -1,0 +1,36 @@
+# Credentials and captured traffic
+.env
+.env.*
+!.env.example
+*cookie*
+*Cookie*
+*token*
+*Token*
+*.har
+*.pcap
+*.pcapng
+*.pem
+*.key
+*.p12
+*.pfx
+# Private data and runtime
+*.log
+*日志*
+*.db
+*.sqlite*
+*.session
+*.zip
+*.7z
+*.exe
+*.mp4
+*.m3u8
+*.ts
+# Python and editors
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
+.idea/
+.vscode/
+.DS_Store
