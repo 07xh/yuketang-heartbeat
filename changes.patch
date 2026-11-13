@@ -1,0 +1,327 @@
+--- a/main.py
++++ b/main.py
+@@ -75,16 +75,48 @@
+ 
+ 
+ def getVideoDuration(url: str):
+-    r = requests.get(url, stream=True)
+-    for data in r.iter_content(chunk_size=512):
+-        if data.find(b'mvhd') > 0:
+-            index = data.find(b'mvhd') + 4
+-            time_scale = struct.unpack('>I', data[index + 13:index + 13 + 4])
+-            durations = struct.unpack('>I', data[index + 13 + 4:index + 13 + 4 + 4])
+-            duration = durations[0] / time_scale[0]
+-            return duration
+-            break
+-
++    """Best-effort MP4 mvhd duration. Returns None if it cannot be established.
++
++    Inspect a bounded prefix; do not download full video files. The MP4 moov box
++    can be at the end, so an unknown duration is normal and must be handled.
++    """
++    max_bytes = 2 * 1024 * 1024
++    if not isinstance(url, str) or not url.startswith(("https://", "http://")):
++        return None
++    try:
++        with requests.get(url, stream=True, timeout=(5, 15)) as response:
++            response.raise_for_status()
++            buffer = bytearray()
++            for chunk in response.iter_content(chunk_size=65536):
++                if not chunk:
++                    continue
++                buffer.extend(chunk[:max_bytes - len(buffer)])
++                pos = 0
++                while True:
++                    index = buffer.find(b"mvhd", pos)
++                    if index < 0:
++                        break
++                    start = index + 4  # version/flags follow the box type
++                    if len(buffer) <= start:
++                        break
++                    version = buffer[start]
++                    if version == 0 and len(buffer) >= start + 20:
++                        scale = int.from_bytes(buffer[start + 12:start + 16], "big")
++                        duration = int.from_bytes(buffer[start + 16:start + 20], "big")
++                    elif version == 1 and len(buffer) >= start + 32:
++                        scale = int.from_bytes(buffer[start + 20:start + 24], "big")
++                        duration = int.from_bytes(buffer[start + 24:start + 32], "big")
++                    else:
++                        pos = index + 4
++                        continue
++                    if scale and duration:
++                        return duration / scale
++                    pos = index + 4
++                if len(buffer) >= max_bytes:
++                    break
++    except requests.RequestException as exc:
++        print(f"读取视频时长失败（{type(exc).__name__}），将尝试课程元数据")
++    return None
+ 
+ class YuketangHeartbeat:
+     def __init__(self, cookies=None):
+@@ -208,30 +240,65 @@
+         return heart_data
+ 
+     def send_heartbeat(self, heart_data_list):
+-        """发送心跳数据"""
+-        payload = {
+-            "heart_data": heart_data_list
+-        }
+-
++        """Send a request once and check application-level acknowledgement.
++
++        Do not blindly retry POST: a timeout does not prove the server rejected it.
++        No synthetic player events or playback positions are generated here.
++        """
++        if not isinstance(heart_data_list, list) or not heart_data_list:
++            print("心跳发送失败：缺少事件数据")
++            return None
+         try:
+             response = self.session.post(
+                 self.heartbeat_url,
+                 headers=self.headers,
+-                data=json.dumps(payload),
+-                timeout=10
++                json={"heart_data": heart_data_list},
++                timeout=(5, 10),
++                allow_redirects=False,
+             )
+-
+-            if response.status_code == 200:
+-                return response.json()
+-            else:
+-                print(f"心跳请求失败，状态码: {response.status_code}")
++        except requests.Timeout:
++            print("心跳发送超时：服务器是否接收未知；不会自动重复提交")
++            return None
++        except requests.RequestException as exc:
++            print(f"心跳网络错误：{type(exc).__name__}")
++            return None
++
++        if response.status_code in (301, 302, 303, 307, 308):
++            print("心跳失败：发生重定向，可能需要重新登录")
++            return None
++        if response.status_code in (401, 403):
++            print(f"心跳失败：身份验证或权限错误（HTTP {response.status_code}）")
++            return None
++        if response.status_code != 200:
++            print(f"心跳失败：HTTP {response.status_code}")
++            return None
++        try:
++            result = response.json()
++        except ValueError:
++            print("心跳失败：HTTP 200 但不是有效 JSON（可能是登录页面）")
++            return None
++        if not isinstance(result, dict):
++            print("心跳失败：响应类型不符合预期")
++            return None
++
++        if result.get("success") is False:
++            print("心跳业务失败：服务端返回 success=false")
++            return None
++        for field in ("code", "errcode", "error_code"):
++            if field in result and str(result[field]) not in ("0", "200"):
++                print(f"心跳业务失败：{field}={result[field]}")
+                 return None
+-
+-        except Exception as e:
+-            print(f"发送心跳失败: {e}")
+-            return None
++        if (result.get("success") is True or
++                any(str(result.get(k)) in ("0", "200") for k in ("code", "errcode", "error_code"))):
++            return result
++        print("心跳响应未提供明确成功标志，需要核对该版本接口响应格式")
++        return None
++
+     def get_video_progress(self):
+-        """获取视频播放进度"""
++        """Read-only, verified server-side viewing progress."""
++        if not self.video_params:
++            print("进度查询失败：尚未配置视频参数")
++            return None
+         params = {
+             'cid': self.video_params['course_id'],
+             'user_id': self.video_params['user_id'],
+@@ -241,32 +308,34 @@
+             'video_id': self.video_params['video_id'],
+             'snapshot': 1
+         }
+-
+         progress_headers = self.headers.copy()
+-        progress_headers.update({
+-            'Accept': 'application/json, text/plain, */*',
+-            'Xt-Agent': 'web'
+-        })
+-
++        progress_headers.update({'Accept': 'application/json, text/plain, */*', 'Xt-Agent': 'web'})
+         try:
+             response = self.session.get(
+-                self.progress_url,
+-                headers=progress_headers,
+-                params=params,
+-                timeout=10
++                self.progress_url, headers=progress_headers,
++                params=params, timeout=(5, 10), allow_redirects=False,
+             )
+-
+-
+-            if response.status_code == 200:
+-                # print(f"hello -{response.json()}")
+-                return response.json()
+-            else:
+-                print(f"获取进度失败，状态码: {response.status_code}")
+-                return None
+-
+-        except Exception as e:
+-            print(f"获取进度失败: {e}")
+-            return None
++        except requests.Timeout:
++            print("进度查询超时")
++            return None
++        except requests.RequestException as exc:
++            print(f"进度查询网络错误：{type(exc).__name__}")
++            return None
++        if response.status_code in (301, 302, 303, 307, 308, 401, 403):
++            print(f"进度查询失败：会话或权限异常（HTTP {response.status_code}）")
++            return None
++        if response.status_code != 200:
++            print(f"进度查询失败：HTTP {response.status_code}")
++            return None
++        try:
++            data = response.json()
++        except ValueError:
++            print("进度查询失败：响应不是 JSON，可能已跳转至登录页")
++            return None
++        if not isinstance(data, dict) or str(data.get("code")) != "0":
++            print("进度查询失败：服务器未返回可验证的成功结果")
++            return None
++        return data
+ 
+     def get_leaf_info(self, classroom_id, leaf_id):
+         """获取视频单元信息"""
+@@ -913,6 +982,18 @@
+                 print("未找到视频时长，无法模拟观看")
+                 return False
+ 
++        try:
++            total_duration = float(total_duration)
++            speed = float(speed)
++            interval = float(interval)
++            start_position = float(start_position)
++        except (TypeError, ValueError):
++            print("播放参数不是有效数字")
++            return False
++        if not (0 < total_duration < float('inf') and 0 < speed < float('inf')
++                and 0 < interval < float('inf') and 0 <= start_position <= total_duration):
++            print("播放参数无效（时长、速度和间隔必须为正数）")
++            return False
+         current_position = start_position
+         first_position = start_position
+ 
+@@ -1007,7 +1088,7 @@
+         if result:
+             print(f"发送暂停事件成功")
+ 
+-        print("视频观看模拟完成")
++        print("本地播放事件发送阶段结束；以服务器最终进度为准")
+ 
+         # 最终获取一次进度
+         final_progress = self.get_video_progress()
+@@ -1019,7 +1100,18 @@
+                 last_point = progress_data.get('last_point', 0)
+                 print(f"最终进度: 完成率={rate:.2%}, 最后位置={last_point:.1f}s")
+ 
+-        return True
++        # 只有服务器确认达到完成阈值才返回成功，避免以本地计时冒充完成。
++        if final_progress and str(final_progress.get('code')) == '0':
++            video_id = str(self.video_params['video_id'])
++            progress_data = final_progress.get('data', {}).get(video_id, {})
++            try:
++                completion = float(progress_data.get('rate', 0))
++            except (TypeError, ValueError):
++                completion = 0
++            if completion >= 0.9:
++                return True
++        print("服务器未确认达到完成阈值，不标记为观看完成")
++        return False
+ 
+     def auto_configure_from_ids(self, classroom_id, leaf_id, sign=None):
+         """根据课堂ID和视频ID自动配置参数"""
+@@ -1027,7 +1119,7 @@
+ 
+         # 获取视频单元信息
+         leaf_info = self.get_leaf_info(classroom_id, leaf_id)
+-        print(f"auto_configure_from_ids - {leaf_info}")
++        print(f"auto_configure_from_ids - 返回字段: {list(leaf_info) if isinstance(leaf_info, dict) else None}")
+         if not leaf_info or not leaf_info.get('success'):
+             print("主方法失败，尝试备用方法获取视频信息...")
+             leaf_info = self.get_video_info_alternative(classroom_id, leaf_id)
+@@ -1066,16 +1158,19 @@
+                     print("所有方法都失败，无法获取视频单元信息")
+                     return False
+ 
+-        data = leaf_info.get('data', {})
+-        content_info = data.get('content_info', {})
+-        media = content_info.get('media', {})
++        data = leaf_info.get('data') or {}
++        content_info = data.get('content_info') or {}
++        media = content_info.get('media') or {}
++        if not all(isinstance(obj, dict) for obj in (data, content_info, media)):
++            print('视频元数据结构异常')
++            return False
+ 
+         # 打印数据结构以便调试
+         print("数据结构调试:")
+         print(f"data keys: {list(data.keys()) if data else 'None'}")
+         print(f"content_info keys: {list(content_info.keys()) if content_info else 'None'}")
+         print(f"media keys: {list(media.keys()) if media else 'None'}")
+-        print(f"media内容: {media}")
++        print(f"media字段: {list(media.keys()) if isinstance(media, dict) else None}")
+ 
+         # 提取关键参数
+         user_id = data.get('user_id')
+@@ -1109,18 +1204,33 @@
+                 watermark_data = watermark_config.get('data', {})
+                 print(f"水印配置: {watermark_data}")
+ 
+-        # 获取视频播放地址
+-        if cc_id:
++        # 优先使用平台提供的元数据；仅在缺失时读取 MP4 容器元数据。
++        # 所有失败路径均不能使用未定义的 play_urls 变量。
++        def _positive_duration(value):
++            try:
++                number = float(value)
++                return number if 0 < number < float('inf') else None
++            except (TypeError, ValueError):
++                return None
++
++        duration = (_positive_duration(media.get('duration')) or
++                    _positive_duration(data.get('duration')))
++        play_urls = []
++        if duration is None and cc_id:
+             play_url_info = self.get_video_play_url(cc_id)
+-            if play_url_info and play_url_info.get('success'):
+-                sources = play_url_info.get('data', {}).get('playurl', {}).get('sources', {})
+-                play_urls = []
+-                for quality, urls in sources.items():
+-                    # print(quality)
+-                    play_urls.extend(urls)
+-                print(f"视频播放地址获取成功，共{len(play_urls)}个清晰度")
+-                # print(play_urls)
+-        duration = getVideoDuration(play_urls[0])
++            if isinstance(play_url_info, dict) and play_url_info.get('success'):
++                playurl = (play_url_info.get('data') or {}).get('playurl') or {}
++                sources = playurl.get('sources') or {}
++                if isinstance(sources, dict):
++                    for urls in sources.values():
++                        items = urls if isinstance(urls, list) else [urls]
++                        play_urls.extend(url for url in items
++                                         if isinstance(url, str) and url.startswith(('https://', 'http://')))
++            if play_urls:
++                duration = getVideoDuration(play_urls[0])
++        if duration is None:
++            print("无法确定视频时长：课程元数据和播放地址均不可用，停止处理该视频")
++            return False
+ 
+         # 检查必要参数
+         if not all([user_id, course_id, sku_id, cc_id]):
