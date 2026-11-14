@@ -385,15 +385,15 @@ class YuketangHeartbeat:
                         return json_data
                     else:
                         print(f"API返回失败: {json_data.get('msg', '未知错误')}")
-                        print(f"响应内容: {response.text[:500]}...")
+                        print('响应内容已隐藏，避免记录账号或课程数据')
                         return None
                 except json.JSONDecodeError:
                     print("响应不是有效的JSON格式")
-                    print(f"响应内容: {response.text[:500]}...")
+                    print('响应内容已隐藏，避免记录账号或课程数据')
                     return None
             else:
                 print(f"获取视频单元信息失败，状态码: {response.status_code}")
-                print(f"响应内容: {response.text}")
+                print('响应内容已隐藏，避免记录账号或课程数据')
                 return None
 
         except Exception as e:
@@ -710,7 +710,7 @@ class YuketangHeartbeat:
                             if isinstance(chapters, list) and len(chapters) > 0:
                                 first_chapter = chapters[0]
                                 print(f"第一个章节的keys: {list(first_chapter.keys())}")
-                                print(f"第一个章节示例: {first_chapter}")
+                                print('章节样例内容已隐藏（只显示字段名）')
                         return json_data
                     else:
                         print(f"API返回失败: {json_data.get('msg', '未知错误')}")
@@ -720,7 +720,7 @@ class YuketangHeartbeat:
                     return None
             else:
                 print(f"获取课程章节失败，状态码: {response.status_code}")
-                print(f"响应内容: {response.text[:500]}...")
+                print('响应内容已隐藏，避免记录账号或课程数据')
                 return None
 
         except Exception as e:
@@ -831,7 +831,7 @@ class YuketangHeartbeat:
                     print(f"  ✅ 图文 '{leaf_name}' 打卡完成")
                     return True
                 else:
-                    print(f"  ⚠️ 图文 '{leaf_name}' 接口调用失败: {result}")
+                    print(f"  ⚠️ 图文 '{leaf_name}' 接口返回业务失败")
             else:
                 print(f"  ❌ 打开失败 (状态码: {response.status_code})")
                 return False
@@ -1126,11 +1126,8 @@ class YuketangHeartbeat:
         if final_progress and str(final_progress.get('code')) == '0':
             video_id = str(self.video_params['video_id'])
             progress_data = final_progress.get('data', {}).get(video_id, {})
-            try:
-                completion = float(progress_data.get('rate', 0))
-            except (TypeError, ValueError):
-                completion = 0
-            if completion >= self.completion_threshold:
+            completion = _progress_rate(progress_data.get('rate'))
+            if completion is not None and completion >= self.completion_threshold:
                 return True
         print("服务器未确认达到完成阈值，不标记为观看完成")
         return False
@@ -1224,7 +1221,7 @@ class YuketangHeartbeat:
             watermark_config = self.get_watermark_config(university_id, classroom_id)
             if watermark_config and watermark_config.get('success'):
                 watermark_data = watermark_config.get('data', {})
-                print(f"水印配置: {watermark_data}")
+                print('已获取水印配置（内容已隐藏）')
 
         # 优先使用平台提供的元数据；仅在缺失时读取 MP4 容器元数据。
         # 所有失败路径均不能使用未定义的 play_urls 变量。
