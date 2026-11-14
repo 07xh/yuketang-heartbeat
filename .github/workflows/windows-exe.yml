@@ -1,0 +1,30 @@
+name: Windows EXE build
+on:
+  push:
+    paths:
+      - 'exe_entry.py'
+      - 'main.py'
+      - 'requirements.txt'
+      - '.github/workflows/windows-exe.yml'
+  workflow_dispatch:
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Install dependencies
+        run: |
+          python -m pip install -r requirements.txt pyinstaller
+      - name: Validate source
+        run: |
+          python -m py_compile exe_entry.py main.py
+      - name: Build EXE
+        run: |
+          python -m PyInstaller --noconfirm --clean --onefile --console --name YuketangAssistant exe_entry.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: YuketangAssistant-Windows
+          path: dist/YuketangAssistant.exe
