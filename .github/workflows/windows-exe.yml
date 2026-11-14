@@ -5,6 +5,7 @@ on:
       - 'exe_entry.py'
       - 'main.py'
       - 'requirements.txt'
+      - 'test_launcher.py'
       - '.github/workflows/windows-exe.yml'
   workflow_dispatch:
 jobs:
@@ -21,9 +22,17 @@ jobs:
       - name: Validate source
         run: |
           python -m py_compile exe_entry.py main.py
+      - name: Run offline launcher tests
+        run: |
+          python -m unittest -v test_launcher
       - name: Build EXE
         run: |
           python -m PyInstaller --noconfirm --clean --onefile --console --name YuketangAssistant exe_entry.py
+      - name: Smoke test EXE exit without server calls
+        shell: pwsh
+        run: |
+          '0' | & .\\dist\\YuketangAssistant.exe
+          if ($LASTEXITCODE -ne 0) { throw "EXE smoke test failed: $LASTEXITCODE" }
       - uses: actions/upload-artifact@v4
         with:
           name: YuketangAssistant-Windows
