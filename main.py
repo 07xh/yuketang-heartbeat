@@ -118,6 +118,27 @@ def getVideoDuration(url: str):
         print(f"读取视频时长失败（{type(exc).__name__}），将尝试课程元数据")
     return None
 
+def _completion_threshold():
+    """Local reporting threshold only; does not change platform completion rules."""
+    raw = os.getenv("COMPLETION_THRESHOLD", "90").strip().rstrip("%")
+    try:
+        value = float(raw)
+    except ValueError:
+        raise ValueError("COMPLETION_THRESHOLD must be a number from 0 to 100")
+    if not 0 <= value <= 100 or not value < float("inf"):
+        raise ValueError("COMPLETION_THRESHOLD must be between 0 and 100")
+    return value / 100.0
+
+
+def _progress_rate(value):
+    """Normalize a server rate defensively; unknown values never count as complete."""
+    try:
+        rate = float(value)
+    except (TypeError, ValueError):
+        return None
+    return rate if 0 <= rate <= 1 else None
+
+
 class YuketangHeartbeat:
     def __init__(self, cookies=None):
         self.session = requests.Session()
@@ -152,6 +173,7 @@ class YuketangHeartbeat:
         # 视频参数
         self.video_params = {}
         self.sequence = 0
+        self.completion_threshold = _completion_threshold()
         # 线程锁，确保sequence安全
         self.sequence_lock = threading.Lock()
 
@@ -1108,7 +1130,7 @@ class YuketangHeartbeat:
                 completion = float(progress_data.get('rate', 0))
             except (TypeError, ValueError):
                 completion = 0
-            if completion >= 0.9:
+            if completion >= self.completion_threshold:
                 return True
         print("服务器未确认达到完成阈值，不标记为观看完成")
         return False
@@ -1307,7 +1329,7 @@ class YuketangHeartbeat:
 
             print(f"当前进度: {rate:.2%}, 最后位置: {last_point:.1f}s, 总时长: {duration}")
 
-            if rate >= 0.9:  # 如果已经看了90%以上
+            if _progress_rate(rate) is not None and _progress_rate(rate) >= self.completion_threshold:
                 print("视频已基本看完，无需继续观看")
                 return True
 
@@ -1341,7 +1363,7 @@ class YuketangHeartbeat:
             # 检查是否已完成
             if skip_completed:
                 progress_info = worker.get_current_progress_info()
-                if progress_info and progress_info['rate'] >= 0.9:
+                if progress_info and _progress_rate(progress_info.get('rate')) is not None and _progress_rate(progress_info['rate']) >= worker.completion_threshold:
                     print(f"[Worker-{worker_id}] ✅ 视频已完成 ({progress_info['rate']:.1%}): {video_name}")
                     return {'status': 'skipped', 'video_info': video_info, 'rate': progress_info['rate']}
 
@@ -1489,7 +1511,7 @@ class YuketangHeartbeat:
             # 检查是否已完成
             if skip_completed:
                 progress_info = self.get_current_progress_info()
-                if progress_info and progress_info['rate'] >= 0.9:
+                if progress_info and _progress_rate(progress_info.get('rate')) is not None and _progress_rate(progress_info['rate']) >= self.completion_threshold:
                     print(f"✅ 视频已完成 ({progress_info['rate']:.1%})，跳过")
                     skip_count += 1
                     continue
