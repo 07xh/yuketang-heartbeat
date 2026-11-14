@@ -80,6 +80,24 @@ class HeartbeatTests(unittest.TestCase):
         self.obj.get_watermark_config=Mock(return_value=None)
         self.obj.get_video_play_url=Mock(return_value=None)
 
+    def test_custom_completion_threshold(self):
+        with patch.dict(os.environ, {'COMPLETION_THRESHOLD': '95'}):
+            obj = ykt.YuketangHeartbeat(cookies={'csrftoken': 'test-only'})
+        self.assertEqual(obj.completion_threshold, 0.95)
+        obj.video_params = {'duration': 20, 'video_id': 123, 'user_id': 1,
+                            'course_id': 2, 'sku_id': 3, 'classroom_id': 4, 'cc_id': 'cc'}
+        obj.send_heartbeat = Mock(return_value={'code': 0})
+        obj.get_video_progress = Mock(return_value={'code': 0, 'data': {'123': {'rate': 0.94}}})
+        self.assertFalse(obj.simulate_video_watching(total_duration=20, start_position=20))
+        obj.get_video_progress = Mock(return_value={'code': 0, 'data': {'123': {'rate': 0.96}}})
+        self.assertTrue(obj.simulate_video_watching(total_duration=20, start_position=20))
+
+    def test_invalid_completion_threshold(self):
+        for raw in ('-1', '101', 'abc', 'nan', 'inf'):
+            with self.subTest(raw=raw), patch.dict(os.environ, {'COMPLETION_THRESHOLD': raw}):
+                with self.assertRaises(ValueError):
+                    ykt.YuketangHeartbeat()
+
     def test_duration_from_leaf_data_without_playurl(self):
         self.setup_leaf(100)
         self.assertTrue(self.obj.auto_configure_from_ids(999,123,None))
